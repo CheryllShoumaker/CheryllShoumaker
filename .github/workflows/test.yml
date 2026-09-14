@@ -1,0 +1,81 @@
+name: CI Pipeline
+
+on:
+  - push
+  - pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - stable
+          - oldstable
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: ${{ matrix.runtime }}
+          cache: ${{ hashFiles('Cargo.lock') != '' && 'cargo' || '' }}
+
+      - name: Install dependencies
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fetch --locked
+
+      - name: Check formatting and linting
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build and typecheck
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo check --all-targets --all-features
+
+      - name: Run unit and integration tests
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --all-targets --all-features
+
+      - name: Write pipeline summary
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          RUST_OUTCOME: ${{ steps.setup-rust.outcome }}
+          DEPS_OUTCOME: ${{ steps.install-dependencies.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: |
+          outcome() {
+            case "${1:-}" in
+              success) printf '✅' ;;
+              failure) printf '❌' ;;
+              cancelled) printf '⏹' ;;
+              skipped) printf '—' ;;
+              *) printf '⚠️' ;;
+            esac
+          }
+
+          {
+            printf '## CI outcome\n\n'
+            printf '| Check | Outcome |\n|---|---|\n'
+            printf '| Checkout | %s |\n' "$(outcome "$CHECKOUT_OUTCOME")"
+            printf '| Rust setup | %s |\n' "$(outcome "$RUST_OUTCOME")"
+            printf '| Dependencies | %s |\n' "$(outcome "$DEPS_OUTCOME")"
+            printf '| Lint | %s |\n' "$(outcome "$LINT_OUTCOME")"
+            printf '| Build | %s |\n' "$(outcome "$BUILD_OUTCOME")"
+            printf '| Tests | %s |\n' "$(outcome "$TEST_OUTCOME")"
+          } >> "$GITHUB_STEP_SUMMARY"
